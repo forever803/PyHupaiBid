@@ -38,15 +38,28 @@ def run3():
 
 def run4():
     # region = (起始x, 起始y, 长, 宽)
-    price_img = auto.screenshot(region=(1440, 200, 100, 20))
+    # price_img = auto.screenshot(region=(1440, 200, 100, 20))
+    price_img = auto.screenshot("xxx.png", region=(563, 617, 80, 20))
     gray = cv2.cvtColor(np.array(price_img), cv2.COLOR_BGR2GRAY)
-    # cv2.imwrite('edge.png', imutils.resize(gray, height=200))
+    cv2.imwrite('edge.png', imutils.resize(gray, height=200))
     # cv2.imwrite('edge.png', gray)
     rawImage = Image.fromarray(gray)
     ret = image_to_string(rawImage)
-    print("xxx{}bbb".format(ret))
-    px = int("".join(list(filter(str.isdigit, ret.split('\n')[0]))))
-    print("px:￥{}.".format(px))
+    print(ret)
+    # print("xxx{}bbb".format(ret))
+    # px = int("".join(list(filter(str.isdigit, ret.split('\n')[0]))))
+    # print("px:￥{}.".format(px))
+    tm_str = "".join(list(filter(lambda x: str.isdigit(x) or x == ":", ret.split('\n')[0])))
+    tm_str = "".join(list(filter(lambda x: str.isdigit(x) or x == ":" or x == "I", ret.split('\n')[0])))
+    tm_str = "".join(list(filter(lambda x: str.isdigit(x) or x == "I", ret.split('\n')[0])))
+    l = []
+    for x in ret.split('\n')[0]:
+        if x == "I":
+            l.append("1")
+        elif str.isdigit(x):
+            l.append(x)
+    print("".join(l))
+    print("{}".format(tm_str))
 
 if __name__=='__main__':
     run4()

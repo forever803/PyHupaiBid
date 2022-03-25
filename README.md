@@ -6,3 +6,4 @@
 * pip install pytesseract
 * pip install opencv-python
 * pip install imutils
+* pip install pynput
