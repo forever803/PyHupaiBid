@@ -1,7 +1,9 @@
+import imp
 from re import T
 from pytesser.pytesser import *
 from PIL import Image, ImageEnhance
 import cv2
+from sys import argv
 import pyautogui as auto
 import pandas as pd
 import numpy as np
@@ -11,7 +13,10 @@ import time as tm
 
 
 class Config(object):
+    fake = True
+    test_col_name = "999999"                    # 需要测试的月份
     operation_delay = 0.2
+    start_auto_calc_seconds = 35                 # 只能计算最终价格和提交时间的起始时间
     input_px_seconds = 48                       # 多少秒开始输入价格
     # px_region = (1213, 487, 100, 20)            # 价格所在区域 (右边价格)
     # # px_region = (600, 712, 100, 20)             # 价格所在区域   (左边价格)
@@ -59,21 +64,53 @@ class HPPage(object):
 
     def stop(self):
         self.running = False
+        if Config.fake:
+            print("月份：{0} 准确的提交时间:{1}.".format(Config.test_col_name, self.info_df[Config.test_col_name]["submit_seconds"]))
         # data_df = pd.DataFrame.from_dict(self.prices, orient='index')
         # data_df.to_csv("data.csv")
+
+    def get_px_from_screenshot(self):
+        if not Config.fake:
+            # 截屏
+            # region = (起始x, 起始y, 长, 宽)
+            price_img = auto.screenshot(region=Config.px_region)
+            # 换为灰度图片
+            gray = cv2.cvtColor(np.array(price_img), cv2.COLOR_BGR2GRAY)
+            # 转换位image obj
+            rawImage = Image.fromarray(gray)
+            ret = image_to_string(rawImage, temp_scratch_name="temp_px")
+            cur_px = int("".join(list(filter(str.isdigit, ret.split('\n')[0]))))
+        else:
+            if self.cur_time is not None:
+                cur_px = self.data[Config.test_col_name][self.cur_time.time().second]
+            else:
+                cur_px = None
+        return cur_px
+    
+    def get_time_from_screenshot(self):
+        if not Config.fake:            
+            # 截屏
+            # region = (起始x, 起始y, 长, 宽)
+            price_img = auto.screenshot(region=Config.tm_region)
+            # 换为灰度图片
+            gray = cv2.cvtColor(np.array(price_img), cv2.COLOR_BGR2GRAY)
+            # 转换位image obj
+            rawImage = Image.fromarray(gray)
+            ret = image_to_string(rawImage, temp_scratch_name="temp_tm")
+            # tm_str = "".join(list(filter(lambda x: str.isdigit(x) or x == ":", ret.split('\n')[0])))
+            # display_time = tm.strptime(tm_str, "%H:%M:%S")
+            display_time = self.parse_display_time(ret)
+        else:
+            if self.cur_time is not None:
+                display_time = self.cur_time + dt.timedelta(seconds=0.05)
+            else:
+                display_time = dt.datetime.strptime("11:29:30", "%H:%M:%S")
+        return display_time
 
     def update_px(self):
         while self.running:
             try:
-                # 截屏
-                # region = (起始x, 起始y, 长, 宽)
-                price_img = auto.screenshot(region=Config.px_region)
-                # 换为灰度图片
-                gray = cv2.cvtColor(np.array(price_img), cv2.COLOR_BGR2GRAY)
-                # 转换位image obj
-                rawImage = Image.fromarray(gray)
-                ret = image_to_string(rawImage, temp_scratch_name="temp_px")
-                cur_px = int("".join(list(filter(str.isdigit, ret.split('\n')[0]))))
+                cur_px = self.get_px_from_screenshot()
                 if self.cur_time is not None and self.cur_time.time().minute == 29:
                     if self.cur_px is None or cur_px >= self.cur_px:
                         self.cur_px = cur_px
@@ -93,22 +130,13 @@ class HPPage(object):
     def update_tm(self):
         while self.running:
             try:
-                # 截屏
-                # region = (起始x, 起始y, 长, 宽)
-                price_img = auto.screenshot(region=Config.tm_region)
-                # 换为灰度图片
-                gray = cv2.cvtColor(np.array(price_img), cv2.COLOR_BGR2GRAY)
-                # 转换位image obj
-                rawImage = Image.fromarray(gray)
-                ret = image_to_string(rawImage, temp_scratch_name="temp_tm")
-                # tm_str = "".join(list(filter(lambda x: str.isdigit(x) or x == ":", ret.split('\n')[0])))
-                # display_time = tm.strptime(tm_str, "%H:%M:%S")
-                display_time = self.parse_display_time(ret)
+                display_time = self.get_time_from_screenshot()
                 self.refresh_cur_time(display_time)
-                # 尝试出价
-                self.try_input_px()
-                # 尝试提交
-                self.try_submit()
+                if not Config.fake:
+                    # 尝试出价
+                    self.try_input_px()
+                    # 尝试提交
+                    self.try_submit()
                 # stop
                 if self.cur_time.time().minute == 30:
                     self.stop()
@@ -185,16 +213,16 @@ class HPPage(object):
         return cur_seconds
 
     def calc_submit_info(self, cur_seconds):
-        if cur_seconds < 40:
+        if cur_seconds < Config.start_auto_calc_seconds:
             return
-        df = self.data[(self.data.index <= cur_seconds) & (self.data.index >= 40)].copy()
+        df = self.data[(self.data.index <= cur_seconds) & (self.data.index >= Config.start_auto_calc_seconds)].copy()
         df = df - df.iloc[0]
         # print(df)
         k = 3
         
         corr_infos = []
         for col in df.columns:
-            if col == "today":
+            if str(col) == "today" or col >= Config.test_col_name:
                 continue
             corr = df["today"].corr(df[col])
             size = len(corr_infos)
@@ -211,7 +239,7 @@ class HPPage(object):
                         if i == size - 1:
                             corr_infos.insert(size, (corr, col))
                             break
-        print(corr_infos[:k])
+        # print(corr_infos[:k])
         col_name = corr_infos[0][1]
         # TODO
         # self.submit_seconds = 55
@@ -222,21 +250,31 @@ class HPPage(object):
         # TODO
         if self.cur_px is not None:
             # self.target_price = self.cur_px + 300
+            ai_submit_seconds = 0
             px_delta = 0
             for i in range(k):
                 col_name = corr_infos[i][1]
                 px_delta += self.data[col_name].iloc[-1] - self.data[col_name].iloc[cur_seconds]
-            px_delta = int(int(px_delta/300) * 100)
+
+                submit_seconds = self.info_df[col_name]["submit_seconds"]                
+                if submit_seconds == 0:
+                    submit_seconds = 55
+                ai_submit_seconds += submit_seconds
+            px_delta = int(int(px_delta/ (k * 100)) * 100)
             self.target_price = self.cur_px + px_delta + 100
+            self.submit_seconds = ai_submit_seconds / k
 
     def print(self):
         tm_str = None if self.cur_time is None else self.cur_time.time().strftime("%H:%M:%S")
-        print("当前时间：{0} 当前价格: {1} 预估目标价:{2}.".format(tm_str, self.cur_px, self.target_price))
+        print("当前时间：{0} 当前价格: {1} 预估目标价:{2} 预估提交时间:{3}.".format(tm_str, self.cur_px, self.target_price, self.submit_seconds))
 
 
 if __name__=='__main__':
+    if len(argv) == 2:
+        Config.fake = True
+        Config.test_col_name = argv[1]
     page = HPPage()
     # for i in range(140):
     while page.running:
         page.print()
-        tm.sleep(0.3)
+        tm.sleep(0.2)
