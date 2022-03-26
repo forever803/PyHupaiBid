@@ -39,7 +39,10 @@ def run3():
 def run4():
     # region = (起始x, 起始y, 长, 宽)
     # price_img = auto.screenshot(region=(1440, 200, 100, 20))
-    price_img = auto.screenshot("xxx.png", region=(563, 617, 80, 20))
+    px_region = (590, 680, 80, 25)             # 价格所在区域   (左边价格)
+    #price_img = auto.screenshot("xxx.png", region=px_region)
+    tm_region = (557, 659, 80, 25)             # 时间所在区域
+    price_img = auto.screenshot("xxx.png", region=tm_region)
     gray = cv2.cvtColor(np.array(price_img), cv2.COLOR_BGR2GRAY)
     cv2.imwrite('edge.png', imutils.resize(gray, height=200))
     # cv2.imwrite('edge.png', gray)

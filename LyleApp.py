@@ -20,16 +20,18 @@ class Config(object):
     # bid_button_pos = (1400, 670)                # 出价按钮区域
     # submit_button_pos = (1140, 825)             # 提价按钮区域    
 
+    px_region = (590, 680, 80, 25)             # 价格所在区域   (左边价格)
+    tm_region = (557, 659, 80, 25)             # 时间所在区域
+    target_px_input_pos = (1226, 630)           # 目标价格输入区域
+    bid_button_pos = (1410, 630)                # 出价按钮区域
+    submit_button_pos = (1100, 800)             # 提价按钮区域
+
+    # 家里 已经调试成功
     # px_region = (600, 644, 80, 20)             # 价格所在区域   (左边价格)
-    # tm_region = (564, 617, 80, 20)             # 时间所在区域
-    # target_px_input_pos = (1226, 597)           # 目标价格输入区域
+    # tm_region = (567, 621, 80, 20)             # 时间所在区域
+    # target_px_input_pos = (1226, 600)           # 目标价格输入区域
     # bid_button_pos = (1410, 600)                # 出价按钮区域
-    # submit_button_pos = (1142, 756)             # 提价按钮区域
-    px_region = (600, 644, 80, 20)             # 价格所在区域   (左边价格)
-    tm_region = (567, 621, 80, 20)             # 时间所在区域
-    target_px_input_pos = (1226, 600)           # 目标价格输入区域
-    bid_button_pos = (1410, 600)                # 出价按钮区域
-    submit_button_pos = (1230, 756)             # 提价按钮区域
+    # submit_button_pos = (1230, 756)             # 提价按钮区域
 
     today_participants = 200779                 # 今天参拍人数
     today_licenses = 11391                      # 今天 放牌总量
@@ -188,28 +190,44 @@ class HPPage(object):
         df = self.data[(self.data.index <= cur_seconds) & (self.data.index >= 40)].copy()
         df = df - df.iloc[0]
         # print(df)
-        max_corr = None
-        col_name = None
-        corr_dict = {}
+        k = 3
+        
+        corr_infos = []
         for col in df.columns:
             if col == "today":
                 continue
             corr = df["today"].corr(df[col])
-            corr_dict[col] = corr
-            if corr != np.nan:
-                if max_corr is None or max_corr < corr:
-                    max_corr = corr
-                    col_name = col
-        # print(corr_dict)
-        print(col_name)
+            size = len(corr_infos)
+            if size == 0:
+                corr_infos.insert(0, (corr, col))
+            else:
+                for i in range(size):
+                    if i >= k:
+                        break
+                    else:
+                        if corr_infos[i][0] < corr:
+                            corr_infos.insert(i, (corr, col))
+                            break
+                        if i == size - 1:
+                            corr_infos.insert(size, (corr, col))
+                            break
+        print(corr_infos[:k])
+        col_name = corr_infos[0][1]
         # TODO
         # self.submit_seconds = 55
         self.submit_seconds = self.info_df[col_name]["submit_seconds"]
+        if self.submit_seconds == 0:
+            self.submit_seconds = 55
+        self.submit_seconds -= 0.1
         # TODO
         if self.cur_px is not None:
             # self.target_price = self.cur_px + 300
-            px_delta = self.data[col_name].iloc[-1] - self.data[col_name].iloc[cur_seconds]
-            self.target_price = self.cur_px + px_delta + 200
+            px_delta = 0
+            for i in range(k):
+                col_name = corr_infos[i][1]
+                px_delta += self.data[col_name].iloc[-1] - self.data[col_name].iloc[cur_seconds]
+            px_delta = int(int(px_delta/300) * 100)
+            self.target_price = self.cur_px + px_delta + 100
 
     def print(self):
         tm_str = None if self.cur_time is None else self.cur_time.time().strftime("%H:%M:%S")
