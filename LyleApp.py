@@ -10,13 +10,17 @@ import numpy as np
 import threading
 import datetime as dt
 import time as tm
+import keyboard
+
+from sklearn.linear_model import LinearRegression
+from sklearn.model_selection import train_test_split
 
 
 class Config(object):
-    fake = True
-    test_col_name = "999999"                    # 需要测试的月份
+    fake = False
+    test_col_name = "202203"                    # 需要测试的月份
     operation_delay = 0.2
-    start_auto_calc_seconds = 35                 # 只能计算最终价格和提交时间的起始时间
+    start_auto_calc_seconds = 30                 # 只能计算最终价格和提交时间的起始时间
     input_px_seconds = 48                       # 多少秒开始输入价格
     # px_region = (1213, 487, 100, 20)            # 价格所在区域 (右边价格)
     # # px_region = (600, 712, 100, 20)             # 价格所在区域   (左边价格)
@@ -28,8 +32,11 @@ class Config(object):
     px_region = (590, 680, 80, 25)             # 价格所在区域   (左边价格)
     tm_region = (557, 659, 80, 25)             # 时间所在区域
     target_px_input_pos = (1226, 630)           # 目标价格输入区域
+    verification_code_input_pos = (1277, 680)   # 验证码输入区域
     bid_button_pos = (1410, 630)                # 出价按钮区域
-    submit_button_pos = (1100, 800)             # 提价按钮区域
+    submit_button_pos = (1100, 800)             # 提交按钮区域
+
+    confirm_button_pos = (1229, 776)             # 提交后成功确认按钮区域
 
     # 家里 已经调试成功
     # px_region = (600, 644, 80, 20)             # 价格所在区域   (左边价格)
@@ -41,6 +48,31 @@ class Config(object):
     today_participants = 200779                 # 今天参拍人数
     today_licenses = 11391                      # 今天 放牌总量
 
+class SubmitInfo(object):
+    class Status(object):
+        New = 0
+        Inputting = 1
+        Ready = 2
+        Finished = 3
+
+    def __init__(self, input_seconds, submit_seconds, px_diff):
+        self.input_seconds = input_seconds
+        self.submit_seconds = submit_seconds
+        self.px_diff = px_diff
+        self._status = SubmitInfo.Status.New
+        pass
+
+    @property
+    def status(self):
+        return self._status
+    
+    @status.setter
+    def status(self, status):
+        self._status = status
+    
+    def print(self):
+        print("input_seconds:{} submit_seconds: {} px_diff:{}".format(self.input_seconds, self.submit_seconds, self.px_diff))
+
 class HPPage(object):
     def __init__(self):
         self.running = True
@@ -51,16 +83,36 @@ class HPPage(object):
         self.input_px_succ = False
         self.submit_succ = False
         self.refresh_display_tm_dt = None
+        self._today_rate = None
         self.prices = {}
         self.data = pd.read_csv(r"data/hist_tick.csv", index_col="seconds")
         self.data['today'] = np.nan
         self.info_df = pd.read_csv(r"data/hist_info.csv", index_col="info")
+        self.info_df.loc['rate'] = self.info_df.loc['licenses_count'] / self.info_df.loc['participants_count']
         # start update px thread
         self.update_px_t = threading.Thread(target=self.update_px, args=())
         self.update_px_t.start()
         # start update tm thread
         self.update_tm_t = threading.Thread(target=self.update_tm, args=())
         self.update_tm_t.start()
+        # start submit thread        
+        self.submit_t = threading.Thread(target=self.run, args=())
+        self.submit_t.start()
+        self.submit_infos = [
+            SubmitInfo(15, 0, 300),
+            SubmitInfo(49, 53.9, 600),
+            SubmitInfo(57, 0, 300),
+        ]
+        keyboard.hook(self.on_keyboard)
+
+    @property
+    def today_rate(self):
+        if self._today_rate is None:
+            if Config.fake:
+                self._today_rate = self.info_df.loc['licenses_count'][Config.test_col_name] / self.info_df.loc['participants_count'][Config.test_col_name]
+            else:
+                self._today_rate = Config.today_licenses / Config.today_participants
+        return self._today_rate
 
     def stop(self):
         self.running = False
@@ -104,7 +156,7 @@ class HPPage(object):
             if self.cur_time is not None:
                 display_time = self.cur_time + dt.timedelta(seconds=0.05)
             else:
-                display_time = dt.datetime.strptime("11:29:30", "%H:%M:%S")
+                display_time = dt.datetime.strptime("11:29:{0}".format(Config.start_auto_calc_seconds - 1), "%H:%M:%S")
         return display_time
 
     def update_px(self):
@@ -114,6 +166,8 @@ class HPPage(object):
                 if self.cur_time is not None and self.cur_time.time().minute == 29:
                     if self.cur_px is None or cur_px >= self.cur_px:
                         self.cur_px = cur_px
+                    continue
+                    # 下面是之前code, 来获取并保存历史行情
                     if len(self.prices) == 0:
                         self.data['today'] = self.cur_px
                     second = self.cur_time.time().second
@@ -121,7 +175,8 @@ class HPPage(object):
                         self.prices[second] = self.cur_px
                         self.data['today'][self.data.index >= second] = self.cur_px
                         # 计算提交时间和target_price
-                        self.calc_submit_info(second)
+                        # self.calc_submit_info(second)
+                        self.calc_submit_info_old(second)
             except Exception as e:
                 print(e)
             finally:
@@ -132,6 +187,8 @@ class HPPage(object):
             try:
                 display_time = self.get_time_from_screenshot()
                 self.refresh_cur_time(display_time)
+                continue
+                # 下面是之前code, 提交数据
                 if not Config.fake:
                     # 尝试出价
                     self.try_input_px()
@@ -145,6 +202,58 @@ class HPPage(object):
             finally:
                 tm.sleep(0.01)
     
+    def run(self):        
+        while self.running:
+            try:
+                cur_seconds = self.get_cur_seconds()
+                for info in self.submit_infos:
+                    if info.status == SubmitInfo.Status.New:
+                        if info.input_seconds <= cur_seconds:
+                            info.print()
+                            # Input Target Price
+                            auto.click(Config.target_px_input_pos)
+                            auto.hotkey('ctrl', 'a')
+                            auto.press("backspace", interval=0.01)
+                            auto.typewrite(message=str(self.cur_px + info.px_diff), interval=0.01)
+                            tm.sleep(Config.operation_delay)
+                            # 出价
+                            auto.click(Config.bid_button_pos)
+                            info.status = SubmitInfo.Status.Inputting
+                            tm.sleep(Config.operation_delay)
+                            auto.click(Config.verification_code_input_pos)
+                        break
+                    elif info.status == SubmitInfo.Status.Inputting:
+                        # Inputting --> Ready 是通过enter键盘输入告知
+                        break
+                    elif info.status == SubmitInfo.Status.Ready:
+                        if info.submit_seconds <= cur_seconds:
+                            # 提交
+                            auto.click(Config.submit_button_pos)
+                            info.status = SubmitInfo.Status.Finished
+                        break
+                    else:
+                        # submit_info 中前一个Finished 才执行下一个，其他情况一直处理这个info的状态
+                        continue
+                # stop
+                if self.cur_time.time().minute == 30:
+                    self.stop()
+            except Exception as e:
+                print(e)
+            finally:
+                tm.sleep(0.01)
+
+    def on_keyboard(self, key):
+        enter_key = keyboard.KeyboardEvent('down', 28, 'enter')
+        if key.event_type == 'down' and key.name == enter_key.name:
+            print("你按下了enter键！")
+            for info in self.submit_infos:
+                if info.status == SubmitInfo.Status.Inputting:
+                    info.status = SubmitInfo.Status.Ready
+        
+        esc_key = keyboard.KeyboardEvent('down', 27, 'esc')
+        if key.event_type == 'down' and key.name == esc_key.name:
+            auto.click(Config.confirm_button_pos)        
+
     def parse_display_time(self, ret):
         l = []
         for x in ret.split('\n')[0]:
@@ -213,6 +322,62 @@ class HPPage(object):
         return cur_seconds
 
     def calc_submit_info(self, cur_seconds):
+        # self.info_df['rate'] = self.info_df['licenses_count'] / self.info_df['participants_count']
+        if cur_seconds < Config.start_auto_calc_seconds:
+            return
+        df = self.data[(self.data.index <= cur_seconds) & (self.data.index >= Config.start_auto_calc_seconds)].copy()
+        df = df - df.iloc[0]
+        df = df[df.columns.difference(['today'])]
+        # target_price 训练
+        self.train_target_price(cur_seconds)
+        # submit_seconds 训练
+        self.train_submit_seconds(cur_seconds)
+
+    def train_target_price(self, cur_seconds):        
+        # target_price 训练
+        px_feature_df = pd.DataFrame(index=self.info_df.columns)
+        px_feature_df["rate"] = self.info_df.loc['rate']
+        data = self.data[self.info_df.columns]
+        px_feature_df["px_delta"] = (data.iloc[cur_seconds] - data.iloc[Config.start_auto_calc_seconds]).values
+        px_feature_df["target_px_diff"] = (data.iloc[-1] - data.iloc[cur_seconds]).values
+        if Config.fake:
+            # px_feature_df = px_feature_df.loc[px_feature_df.index.difference([str(Config.test_col_name)])]
+            px_feature_df = px_feature_df.loc[px_feature_df.index < Config.test_col_name]
+        # 划分特征值和目标值
+        px_feature = px_feature_df[['rate', 'px_delta']].values
+        target = np.array(px_feature_df['target_px_diff'])
+        # 训练
+        lrTool = LinearRegression()
+        lrTool.fit(px_feature, target)
+        # 预测结果
+        cur_delta = self.data["today"][cur_seconds] - self.data["today"][Config.start_auto_calc_seconds]
+        feature_test = [[self.today_rate, cur_delta]]
+        target_px_diff = lrTool.predict(feature_test)[0]
+        self.target_price = self.cur_px + (round(target_px_diff / 100)) * 100 + 100
+
+    def train_submit_seconds(self, cur_seconds):
+        # submit_seconds 训练
+        sec_feature_df = pd.DataFrame(index=self.info_df.columns)
+        sec_feature_df["rate"] = self.info_df.loc['rate']
+        data = self.data[self.info_df.columns]
+        sec_feature_df["px_delta"] = (data.iloc[cur_seconds] - data.iloc[Config.start_auto_calc_seconds]).values
+        sec_feature_df["target_seconds"] = self.info_df.loc['submit_seconds']
+        if Config.fake:
+            sec_feature_df = sec_feature_df.loc[sec_feature_df.index.difference([str(Config.test_col_name)])]
+            # sec_feature_df = sec_feature_df.loc[sec_feature_df.index < Config.test_col_name]
+            pass
+        # 划分特征值和目标值
+        sec_feature = sec_feature_df[['rate', 'px_delta']].values
+        target = np.array(sec_feature_df['target_seconds'])
+        # 训练
+        lrTool = LinearRegression()
+        lrTool.fit(sec_feature, target)
+        # 预测结果
+        cur_delta = self.data["today"][cur_seconds] - self.data["today"][Config.start_auto_calc_seconds]
+        feature_test = [[self.today_rate, cur_delta]]
+        self.submit_seconds = lrTool.predict(feature_test)[0]
+
+    def calc_submit_info_old(self, cur_seconds):
         if cur_seconds < Config.start_auto_calc_seconds:
             return
         df = self.data[(self.data.index <= cur_seconds) & (self.data.index >= Config.start_auto_calc_seconds)].copy()
@@ -277,4 +442,4 @@ if __name__=='__main__':
     # for i in range(140):
     while page.running:
         page.print()
-        tm.sleep(0.2)
+        tm.sleep(1)
